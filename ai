@@ -1,10 +1,9 @@
 --[[
     Delta-compatible Attach-only UI
-    Extracted from [K].txt — all non-Attach features removed.
-    Target selection, attach toggles, No Delay, custom attach, etc.
+    Attach engine pulled directly from [K].txt source.
+    Everything else stripped.
 ]]
 
--- services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -12,6 +11,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
+local SoundService = game:GetService("SoundService")
 
 local localPlayer = Players.LocalPlayer
 local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
@@ -26,6 +26,9 @@ end)
 
 -- state
 local tbl = {
+    AdminDisabled = false,
+    AdminFrozen = false,
+    AttachLockedDisabled = false,
     NoDelay = false,
     FacebangEnabled = false, Facebang = false,
     HipbangEnabled = false, Hipbang = false,
@@ -39,16 +42,13 @@ local tbl = {
     CustomAttachEnabled = false, CustomAttach = false,
     ClickToTarget = false,
     HiddenPlayers = {},
-    SavedAnimations = {},
-    FavoriteAnimations = {},
     ShowNotifications = true,
     SoundFX = true,
     MobileButtonsEnabled = nil,
     MobileButtonPositions = {},
 }
 
-local TargetPlayer = nil
-local ctxTargetPlayer = nil
+local TargetPlayer, ctxTargetPlayer
 local FacebangTarget, HipbangTarget, PatTarget, HeadsitTarget
 local BackhugTarget, FronthugTarget, ProposeTarget, BagpackTarget
 local GoonTarget, CustomAttachTarget
@@ -62,7 +62,6 @@ local FacebangSpeed = 1
 local FacebangDistance = 5
 local HipbangSpeed = 1
 local HipbangDistance = 2.5
-local SpeedMultiplier = 100
 
 local tbl2 = {
     ToggleGUI = Enum.KeyCode.RightControl,
@@ -84,7 +83,6 @@ local AttachFeatures = {
     "Fronthug","Bagpack","Goon","CustomAttach",
 }
 
--- theme
 local tbl3 = {
     bg = Color3.fromRGB(8, 8, 8),
     bgCard = Color3.fromRGB(14, 14, 14),
@@ -107,13 +105,8 @@ local tbl3 = {
     toggleOff = Color3.fromRGB(50, 50, 60),
     toggleKnob = Color3.fromRGB(240, 240, 245),
     divider = Color3.fromRGB(35, 35, 45),
-    sidebarBg = Color3.fromRGB(12, 12, 16),
-    sidebarIcon = Color3.fromRGB(160, 160, 170),
-    sidebarActive = Color3.fromRGB(248, 248, 255),
-    statsBg = Color3.fromRGB(18, 18, 24),
 }
 
--- helpers
 local function corner(obj, r)
     local c = Instance.new("UICorner", obj)
     c.CornerRadius = UDim.new(0, r or 8)
@@ -144,12 +137,18 @@ local function tween(obj, props, time, style, dir)
     end
 end
 
--- forward declarations
-local SetAttachState
-local syncAttachTarget
-local resolveAttachTarget
-local clearAutoSelectedTarget
-local SendNotification
+-- forward declares
+local SendNotification, SetAttachState, syncAttachTarget, resolveAttachTarget, clearAutoSelectedTarget
+local fbSetup, fbApplyCFrame, fbActivate, fbCleanup, fbDeactivate, fbComputeCFrame
+local hbSetup, hbApplyCFrame, hbActivate, hbCleanup, hbDeactivate, hbComputeCFrame
+local hsSetup, hsApplyCFrame, hsActivate, hsCleanup, hsDeactivate, hsComputeCFrame
+local bhSetup, bhApplyCFrame, bhActivate, bhCleanup, bhDeactivate, bhComputeCFrame
+local fhSetup, fhApplyCFrame, fhActivate, fhCleanup, fhDeactivate, fhComputeCFrame
+local prSetup, prApplyCFrame, prActivate, prCleanup, prDeactivate, prComputeCFrame
+local bgpSetup, bgpApplyCFrame, bgpActivate, bgpCleanup, bgpDeactivate, bgpComputeCFrame
+local goonSetup, goonApplyCFrame, goonActivate, goonCleanup, goonDeactivate, goonComputeCFrame
+local customAttachSetup, customAttachApplyCFrame, customAttachActivate, customAttachCleanup, customAttachDeactivate, customAttachComputeCFrame
+local patSetup, patApplyCFrame, patActivate, patCleanup, patDeactivate, patComputeCFrame
 
 -- notifications
 do
@@ -159,16 +158,17 @@ do
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     local ok = pcall(function()
         if gethui then gui.Parent = gethui()
+        elseif syn and syn.protect_gui then syn.protect_gui(gui); gui.Parent = CoreGui
         else gui.Parent = CoreGui end
     end)
-    if not ok then gui.Parent = localPlayer:WaitForChild("PlayerGui") end
+    if not ok or not gui.Parent then gui.Parent = localPlayer:WaitForChild("PlayerGui") end
 
     local frame = Instance.new("Frame", gui)
     frame.AnchorPoint = Vector2.new(0.5, 1)
     frame.Position = UDim2.new(0.5, 0, 1, 50)
     frame.Size = UDim2.new(0, 0, 0, 36)
     frame.AutomaticSize = Enum.AutomaticSize.X
-    frame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(10,10,10)
     frame.BackgroundTransparency = 1
     frame.ClipsDescendants = true
     frame.ZIndex = 100
@@ -275,7 +275,7 @@ local function playClick()
             local s = Instance.new("Sound")
             s.SoundId = "rbxassetid://101483797008554"
             s.Volume = 0.3
-            s.Parent = game:GetService("SoundService")
+            s.Parent = SoundService
             s:Play()
             game:GetService("Debris"):AddItem(s, 3)
         end)
@@ -289,22 +289,21 @@ local function playHover()
             local s = Instance.new("Sound")
             s.SoundId = "rbxassetid://6895079853"
             s.Volume = 0.15
-            s.Parent = game:GetService("SoundService")
+            s.Parent = SoundService
             s:Play()
             game:GetService("Debris"):AddItem(s, 3)
         end)
     end)
 end
 
--- attach engine (from source, reduced)
-local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+-- ============================================
+-- ATTACH ENGINE (pulled from source)
+-- ============================================
 
-local function setPhysicsRep(part)
-    if tbl.NoDelay and humanoidRootPart and typeof(sethiddenproperty) == "function" and part then
+local function setPhysicsRep(arg)
+    if tbl.NoDelay and humanoidRootPart and typeof(sethiddenproperty) == "function" and arg then
         pcall(function()
-            sethiddenproperty(humanoidRootPart, "PhysicsRepRootPart", part)
+            sethiddenproperty(humanoidRootPart, "PhysicsRepRootPart", arg)
         end)
     end
 end
@@ -317,458 +316,1537 @@ local function clearPhysicsRep()
     end
 end
 
--- Facebang
-local facebangSetupChar = nil
-local facebangTrack = nil
-local facebangOriginal = {}
-
-local function fbCleanup()
-    clearPhysicsRep()
-    if facebangTrack then
-        pcall(function() facebangTrack:Stop(0); facebangTrack:Destroy() end)
-        facebangTrack = nil
+-- target validity check (exact from source)
+local tbl18 = {}
+local function isTargetValidAndAlive(model)
+    if not model then return false end
+    local character2 = model.Character
+    if not character2 then
+        character2 = typeof(model) == "Instance"
+        if character2 then character2 = model:IsA("Model") end
+        if character2 then character2 = model end
     end
-    if facebangSetupChar then
-        for k, v in pairs(facebangOriginal) do
-            if k and k.Parent then pcall(function() k.CanCollide = v.CanCollide end) end
+    if character2 and character2.Parent then
+        tbl18[model] = nil
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if humanoid2 then
+            if humanoid2.Health <= 0 then
+                return false
+            else
+                local st = humanoid2:GetState()
+                if st ~= Enum.HumanoidStateType.Dead then
+                    local hrp = character2:FindFirstChild("HumanoidRootPart") or character2:FindFirstChild("Torso") or character2:FindFirstChild("Head")
+                    if hrp and hrp.Parent then
+                        local fh = workspace.FallenPartsDestroyHeight or -500
+                        if typeof(fh) ~= "number" or fh ~= fh then fh = -500 end
+                        local flag8 = hrp.AssemblyLinearVelocity.Y < -80
+                        if flag8 then flag8 = hrp.Position.Y < fh + 30 end
+                        if flag8 then return false end
+                        return true
+                    end
+                    if typeof(character2.GetPivot) == "function" then
+                        local ok, dead = pcall(function() return character2:GetPivot() end)
+                        if ok and dead and dead.Position and dead.Position.Magnitude > 0.1 then
+                            return true
+                        end
+                    end
+                else
+                    return false
+                end
+            end
+        else
+            local hrp = character2:FindFirstChild("HumanoidRootPart") or character2:FindFirstChild("Torso") or character2:FindFirstChild("Head")
+            if hrp and hrp.Parent then
+                local fh = workspace.FallenPartsDestroyHeight or -500
+                if typeof(fh) ~= "number" or fh ~= fh then fh = -500 end
+                local flag8 = hrp.AssemblyLinearVelocity.Y < -80
+                if flag8 then flag8 = hrp.Position.Y < fh + 30 end
+                if flag8 then return false end
+                return true
+            end
+            if typeof(character2.GetPivot) == "function" then
+                local ok, dead = pcall(function() return character2:GetPivot() end)
+                if ok and dead and dead.Position and dead.Position.Magnitude > 0.1 then
+                    return true
+                end
+            end
         end
-        facebangOriginal = {}
-        local h = facebangSetupChar:FindFirstChildOfClass("Humanoid")
-        if h then
-            h.PlatformStand = false
-            h.AutoRotate = true
-            pcall(function() h:ChangeState(Enum.HumanoidStateType.GettingUp) end)
-        end
-        local a = facebangSetupChar:FindFirstChild("Animate")
-        if a then a.Disabled = false end
-        pcall(function() Workspace.Gravity = 192.2 end)
+        return false
+    end
+    local v6 = tbl18[model]
+    if not v6 then
+        tbl18[model] = tick()
+        return true
+    end
+    if tick() - v6 < 3 then return true end
+    return false
+end
+
+-- ============================================
+-- FACEBANG (exact from source)
+-- ============================================
+do
+    local facebangSetupChar = nil
+    local flag8 = false
+    local tbl17 = {}
+    local track = nil
+
+    fbCleanup = function(character2)
         facebangSetupChar = nil
-    end
-end
-
-local function fbSetup()
-    local char = localPlayer.Character
-    if not char then return false end
-    if facebangSetupChar == char and facebangTrack and facebangTrack.IsPlaying then return true end
-    fbCleanup()
-    local h = char:FindFirstChildOfClass("Humanoid")
-    if not h then return false end
-    h.AutoRotate = false
-    local animator = h:FindFirstChildOfClass("Animator")
-    if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = h
-    end
-    local animate = char:FindFirstChild("Animate")
-    if animate and not animate.Disabled then animate.Disabled = true end
-    for _, t in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-    for _, t in ipairs(h:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-    h.PlatformStand = true
-    pcall(function() h:ChangeState(Enum.HumanoidStateType.Physics) end)
-    pcall(function() Workspace.Gravity = 0 end)
-    pcall(function()
-        local anim = Instance.new("Animation")
-        anim.AnimationId = "rbxassetid://116235062592344"
-        facebangTrack = animator:LoadAnimation(anim)
-        facebangTrack.Priority = Enum.AnimationPriority.Action4
-        facebangTrack.Looped = true
-        facebangTrack:Play()
-    end)
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            facebangOriginal[p] = { CanCollide = p.CanCollide }
-            p.CanCollide = false
-        end
-    end
-    facebangSetupChar = char
-    return true
-end
-
-local function fbComputeCFrame(head)
-    local speed = tonumber(FacebangSpeed) or 1
-    local dist = tonumber(FacebangDistance) or 5
-    local offset = 0.5 + ((math.sin(tick() * speed * 10) + 1) / 2) * dist
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local pos = head.Position
-    local p2 = pos + unit * offset
-    local v3 = Vector3.new(p2.X, pos.Y + 1.2, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function fbApplyCFrame(useRep)
-    if not (tbl.Facebang and humanoidRootPart) then return false end
-    local tgt = FacebangTarget or pgPlayer
-    if not (tgt and tgt.Character) then return false end
-    local head = tgt.Character:FindFirstChild("Head")
-    if not head then return false end
-    local hrp = tgt.Character:FindFirstChild("HumanoidRootPart")
-    local cf = fbComputeCFrame(head)
-    if useRep and tbl.NoDelay and typeof(sethiddenproperty) == "function" and hrp then
-        humanoidRootPart.CFrame = hrp.CFrame:ToObjectSpace(cf)
-        humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-        humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-    else
-        humanoidRootPart.CFrame = cf
-        if hrp then
-            humanoidRootPart.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity
-            humanoidRootPart.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity
-        else
-            humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-            humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-        end
-    end
-    pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
-    pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
-    return true
-end
-
-local function fbActivate()
-    if not fbSetup() then return end
-    if FacebangTarget then
-        local hrp = FacebangTarget.Character and FacebangTarget.Character:FindFirstChild("HumanoidRootPart")
-        if tbl.NoDelay and hrp then setPhysicsRep(hrp) end
-    end
-end
-
--- Hipbang
-local hbSetupChar, hbTrack, hbOriginal = nil, nil, {}
-
-local function hbCleanup()
-    clearPhysicsRep()
-    if hbTrack then pcall(function() hbTrack:Stop(0); hbTrack:Destroy() end); hbTrack = nil end
-    if hbSetupChar then
-        for k,v in pairs(hbOriginal) do
-            if k and k.Parent then pcall(function() k.CanCollide = v.CanCollide end) end
-        end
-        hbOriginal = {}
-        local h = hbSetupChar:FindFirstChildOfClass("Humanoid")
-        if h then
-            h.PlatformStand = false
-            h.AutoRotate = true
-            pcall(function() h:ChangeState(Enum.HumanoidStateType.GettingUp) end)
-        end
-        local a = hbSetupChar:FindFirstChild("Animate")
-        if a then a.Disabled = false end
-        pcall(function() Workspace.Gravity = 192.2 end)
-        hbSetupChar = nil
-    end
-end
-
-local function hbSetup()
-    local char = localPlayer.Character
-    if not char then return false end
-    if hbSetupChar == char and hbTrack and hbTrack.IsPlaying then return true end
-    hbCleanup()
-    local h = char:FindFirstChildOfClass("Humanoid")
-    if not h then return false end
-    h.AutoRotate = false
-    local animator = h:FindFirstChildOfClass("Animator")
-    if not animator then animator = Instance.new("Animator"); animator.Parent = h end
-    local animate = char:FindFirstChild("Animate")
-    if animate and not animate.Disabled then animate.Disabled = true end
-    for _, t in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-    for _, t in ipairs(h:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-    h.PlatformStand = true
-    pcall(function() h:ChangeState(Enum.HumanoidStateType.Physics) end)
-    pcall(function() Workspace.Gravity = 0 end)
-    pcall(function()
-        local anim = Instance.new("Animation")
-        anim.AnimationId = "rbxassetid://116235062592344"
-        hbTrack = animator:LoadAnimation(anim)
-        hbTrack.Priority = Enum.AnimationPriority.Action
-        hbTrack.Looped = true
-        hbTrack:Play()
-    end)
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            hbOriginal[p] = { CanCollide = p.CanCollide }
-            p.CanCollide = false
-        end
-    end
-    hbSetupChar = char
-    return true
-end
-
-local function hbComputeCFrame(head)
-    local speed = tonumber(HipbangSpeed) or 1
-    local dist = tonumber(HipbangDistance) or 2.5
-    local offset = 0.5 + (math.sin(tick() * speed * 10) + 1) / 2 * dist
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local pos = head.Position
-    local p2 = pos - unit * offset
-    local v3 = Vector3.new(p2.X, pos.Y - 0.5, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function hbApplyCFrame(useRep)
-    if not (tbl.Hipbang and humanoidRootPart) then return false end
-    local tgt = HipbangTarget
-    if not (tgt and tgt.Character) then return false end
-    local head = tgt.Character:FindFirstChild("Head")
-    if not head then return false end
-    local hrp = tgt.Character:FindFirstChild("HumanoidRootPart")
-    local cf = hbComputeCFrame(head)
-    if useRep and tbl.NoDelay and typeof(sethiddenproperty) == "function" and hrp then
-        humanoidRootPart.CFrame = hrp.CFrame:ToObjectSpace(cf)
-        humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-        humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-    else
-        humanoidRootPart.CFrame = cf
-        if hrp then
-            humanoidRootPart.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity
-            humanoidRootPart.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity
-        else
-            humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-            humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-        end
-    end
-    pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
-    pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
-    return true
-end
-
-local function hbActivate()
-    if not hbSetup() then return end
-    if HipbangTarget then
-        local hrp = HipbangTarget.Character and HipbangTarget.Character:FindFirstChild("HumanoidRootPart")
-        if tbl.NoDelay and hrp then setPhysicsRep(hrp) end
-    end
-end
-
--- Simple attach helpers (Pat, Headsit, etc.) — generic CFrame-based
-local simpleAttachState = {
-    Pat = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Headsit = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Backhug = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Fronthug = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Propose = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Bagpack = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    Goon = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-    CustomAttach = { setup = nil, cleanup = nil, compute = nil, apply = nil },
-}
-
-local function makeSimpleAttach(name, animId, computeFn)
-    local setupChar, track, original, wasDisabled = nil, nil, {}, false
-
-    local function cleanup()
         clearPhysicsRep()
-        if track then pcall(function() track:Stop(0); track:Destroy() end); track = nil end
-        if setupChar then
-            for k,v in pairs(original) do
-                if k and k.Parent then pcall(function() k.CanCollide = v.CanCollide end) end
+        if not character2 then
+            character2 = localPlayer.Character or character
+        end
+        if track then
+            pcall(function() track:Stop(0); track:Destroy() end)
+            track = nil
+        end
+        if character2 then
+            local flag9 = false
+            for _, v6 in ipairs(AttachFeatures) do
+                if tbl[v6] then flag9 = true; break end
             end
-            original = {}
-            local h = setupChar:FindFirstChildOfClass("Humanoid")
-            if h then
-                h.PlatformStand = false
-                h.AutoRotate = true
-                pcall(function() h:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            if not flag9 then
+                local animate = character2:FindFirstChild("Animate")
+                if animate and flag8 then
+                    animate.Disabled = false
+                    flag8 = false
+                end
+                local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+                if humanoid2 then
+                    humanoid2.PlatformStand = false
+                    humanoid2.AutoRotate = true
+                    pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+                end
+                pcall(function() Workspace.Gravity = 192.2 end)
             end
-            local a = setupChar:FindFirstChild("Animate")
-            if a and wasDisabled then a.Disabled = false end
-            wasDisabled = false
-            pcall(function() Workspace.Gravity = 192.2 end)
-            setupChar = nil
+            for k, v6 in pairs(tbl17) do
+                if k and k.Parent then
+                    pcall(function() k.CanCollide = v6.CanCollide end)
+                end
+            end
+            table.clear(tbl17)
         end
     end
 
-    local function setup()
-        local char = localPlayer.Character
-        if not char then return false end
-        if setupChar == char and track and track.IsPlaying then return true end
-        cleanup()
-        local h = char:FindFirstChildOfClass("Humanoid")
-        if not h then return false end
-        h.AutoRotate = false
-        local animator = h:FindFirstChildOfClass("Animator")
-        if not animator then animator = Instance.new("Animator"); animator.Parent = h end
-        local animate = char:FindFirstChild("Animate")
-        if animate and not animate.Disabled then animate.Disabled = true; wasDisabled = true end
-        for _, t in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-        for _, t in ipairs(h:GetPlayingAnimationTracks() or {}) do pcall(function() t:Stop(0) end) end
-        h.PlatformStand = true
-        pcall(function() h:ChangeState(Enum.HumanoidStateType.Physics) end)
-        pcall(function() Workspace.Gravity = 0 end)
-        if animId and animId ~= "" then
-            pcall(function()
-                local anim = Instance.new("Animation")
-                anim.AnimationId = "rbxassetid://" .. animId
-                track = animator:LoadAnimation(anim)
+    local function fn16(character2)
+        if not character2 then return end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            flag8 = true
+        end
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        local animator = humanoid2:FindFirstChildOfClass("Animator") or humanoid2
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do
+            if v6 ~= track then
+                pcall(function() v6:Stop(0); v6:Destroy() end)
+            end
+        end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do
+            if v6 ~= track then
+                pcall(function() v6:Stop(0); v6:Destroy() end)
+            end
+        end
+        pcall(function()
+            if not (track and track.IsPlaying) then
+                local animation = Instance.new("Animation")
+                animation.AnimationId = "rbxassetid://116235062592344"
+                track = animator:LoadAnimation(animation)
                 track.Priority = Enum.AnimationPriority.Action4
                 track.Looped = true
                 track:Play()
-            end)
-        end
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                original[p] = { CanCollide = p.CanCollide }
-                p.CanCollide = false
+            end
+        end)
+        humanoid2.PlatformStand = true
+        humanoid2.AutoRotate = false
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                if tbl17[part] == nil then
+                    tbl17[part] = { CanCollide = part.CanCollide }
+                end
+                part.CanCollide = false
             end
         end
-        setupChar = char
-        return true
     end
 
-    local function apply(useRep)
-        if not (tbl[name] and humanoidRootPart) then return false end
-        local tgt = TargetPlayer
-        if not (tgt and tgt.Character) then return false end
-        local hrp = tgt.Character:FindFirstChild("HumanoidRootPart") or tgt.Character:FindFirstChild("Torso")
-        if not hrp then return false end
-        local cf = computeFn(hrp)
-        if useRep and tbl.NoDelay and typeof(sethiddenproperty) == "function" then
-            humanoidRootPart.CFrame = hrp.CFrame:ToObjectSpace(cf)
-            humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
-            humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
-        else
-            humanoidRootPart.CFrame = cf
-            humanoidRootPart.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity
-            humanoidRootPart.AssemblyAngularVelocity = hrp.AssemblyAngularVelocity
+    fbComputeCFrame = function(arg)
+        local n209 = 0.5 + ((math.sin(tick() * (tonumber(FacebangSpeed) or 1) * 10) + 1) / 2) * (tonumber(FacebangDistance) or 5)
+        local lookVector = arg.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0, 0, 1)
+        local position4 = arg.Position
+        local n210 = position4 + unit * n209
+        local vector3 = Vector3.new(n210.X, position4.Y + 1.2, n210.Z)
+        return CFrame.lookAt(vector3, Vector3.new(position4.X, vector3.Y, position4.Z))
+    end
+
+    fbApplyCFrame = function(arg)
+        if tbl.Facebang and humanoidRootPart then
+            local facebangTarget = FacebangTarget or ctxTargetPlayer or TargetPlayer
+            if facebangTarget and facebangTarget.Character then
+                local head = facebangTarget.Character:FindFirstChild("Head")
+                if not head then return false end
+                local humanoidRootPart2 = facebangTarget.Character:FindFirstChild("HumanoidRootPart")
+                local cFrame = fbComputeCFrame(head)
+                if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                    local cframe = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                    humanoidRootPart.CFrame = cframe
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                else
+                    humanoidRootPart.CFrame = cFrame
+                    if humanoidRootPart2 then
+                        humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                        humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                    else
+                        humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                        humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end
+                pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+                pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+                return true
+            end
+            return false
         end
-        pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
-        pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+        return false
+    end
+
+    fbActivate = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        local tgt = resolveAttachTarget("Facebang", true)
+        if tgt and tgt.Character and tgt.Character:FindFirstChild("Head") then
+            FacebangTarget = tgt
+            syncAttachTarget(tgt)
+            facebangSetupChar = character2
+            fn16(character2)
+            if tbl.NoDelay then
+                local hrp2 = tgt.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 then setPhysicsRep(hrp2) end
+            else
+                clearPhysicsRep()
+            end
+        end
+    end
+
+    fbDeactivate = function()
+        local tgt = FacebangTarget or TargetPlayer
+        fbCleanup(localPlayer.Character or character)
+        if tgt and tgt.Character then
+            pcall(function()
+                local hrp2 = tgt.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        FacebangTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- HIPBANG (exact from source)
+-- ============================================
+do
+    local hbSetupChar = nil
+    local hbWasAnimateDisabled = false
+    local hbAnimTrack = nil
+    local hbOriginalParts = {}
+
+    hbCleanup = function()
+        clearPhysicsRep()
+        if hbAnimTrack then
+            pcall(function() hbAnimTrack:Stop(0); hbAnimTrack:Destroy() end)
+            hbAnimTrack = nil
+        end
+        if character then
+            local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+            if humanoid2 then
+                humanoid2.PlatformStand = false
+                humanoid2.AutoRotate = true
+                pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            end
+            if hbWasAnimateDisabled then
+                local animate = character:FindFirstChild("Animate")
+                if animate then animate.Disabled = false end
+                hbWasAnimateDisabled = false
+            end
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        for k, v6 in pairs(hbOriginalParts) do
+            if k and k.Parent then
+                pcall(function() k.CanCollide = v6.CanCollide end)
+            end
+        end
+        table.clear(hbOriginalParts)
+        hbSetupChar = nil
+    end
+
+    hbSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if hbSetupChar == character2 then
+            if hbAnimTrack and hbAnimTrack.IsPlaying then return true end
+            hbSetupChar = nil
+        end
+        hbCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            hbWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://" .. tostring(116235062592344)
+            hbAnimTrack = animator:LoadAnimation(animation)
+            hbAnimTrack.Priority = Enum.AnimationPriority.Action
+            hbAnimTrack.Looped = true
+            hbAnimTrack:Play()
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                hbOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        hbSetupChar = character2
         return true
     end
 
-    return { setup = setup, cleanup = cleanup, apply = apply }
-end
-
--- compute functions
-local function patCompute(head)
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local parent = head.Parent
-    local hrp = parent and parent:FindFirstChild("HumanoidRootPart")
-    local y = hrp and hrp.Position.Y or (head.Position.Y - 1.5)
-    local pos = head.Position
-    local p2 = pos + unit * 2.5
-    local v3 = Vector3.new(p2.X, y, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function hsCompute(head)
-    return head.CFrame * CFrame.new(0, 1.5, 0)
-end
-
-local function bhCompute(head)
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local parent = head.Parent
-    local hrp = parent and parent:FindFirstChild("HumanoidRootPart")
-    local y = hrp and hrp.Position.Y or (head.Position.Y - 1.5)
-    local pos = head.Position
-    local p2 = pos - unit * 1.25
-    local v3 = Vector3.new(p2.X, y, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function fhCompute(head)
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local pos = head.Position
-    local p2 = pos + unit * 1.1
-    local v3 = Vector3.new(p2.X, pos.Y - 1.5, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function prCompute(head)
-    local look = head.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local pos = head.Position
-    local p2 = pos + unit * 3.5
-    local v3 = Vector3.new(p2.X, pos.Y - 1.5, p2.Z)
-    return CFrame.lookAt(v3, Vector3.new(pos.X, v3.Y, pos.Z))
-end
-
-local function bgpCompute(hrp)
-    local look = hrp.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local pos = hrp.Position
-    local p2 = pos - unit * 1
-    local v3 = Vector3.new(p2.X, pos.Y + 0.5, p2.Z)
-    return CFrame.lookAt(v3, v3 - unit)
-end
-
-local function goonCompute(head)
-    local parent = head.Parent
-    local hrp = parent and parent:FindFirstChild("HumanoidRootPart")
-    if not hrp then return head.CFrame * CFrame.new(0, 0, -4.5) end
-    local look = hrp.CFrame.LookVector
-    local right = hrp.CFrame.RightVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local flatR = Vector3.new(right.X, 0, right.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local unitR = flatR.Magnitude > 0 and flatR.Unit or Vector3.new(1,0,0)
-    local p = hrp.Position + unit * 4.5 + -unitR * 1.2
-    local v3 = Vector3.new(p.X, head.Position.Y + 1.5, p.Z)
-    return CFrame.lookAt(v3, v3 - unit)
-end
-
-local function customCompute(hrp)
-    local ox = tonumber(CustomAttachOffsetX) or 0
-    local oy = tonumber(CustomAttachOffsetY) or 0
-    local oz = tonumber(CustomAttachOffsetZ) or 2.5
-    local behind = CustomAttachFacing == "Behind"
-    local look = hrp.CFrame.LookVector
-    local right = hrp.CFrame.RightVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    local flatR = Vector3.new(right.X, 0, right.Z)
-    local unit = flat.Magnitude > 0 and flat.Unit or Vector3.new(0,0,1)
-    local unitR = flatR.Magnitude > 0 and flatR.Unit or Vector3.new(1,0,0)
-    local pos = hrp.Position
-    if behind then
-        local p = pos + -unit * oz + unitR * ox + Vector3.new(0, oy, 0)
-        return CFrame.lookAt(p, p + unit)
+    hbComputeCFrame = function(instance2)
+        local n204 = tonumber(HipbangSpeed) or 1
+        local n205 = tonumber(HipbangDistance) or 2.5
+        local n206 = 0.5 + (math.sin(tick() * n204 * 10) + 1) / 2 * n205
+        local lookVector = instance2.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local parent = instance2.Parent
+        local y
+        if parent then
+            local hrp = parent:FindFirstChild("HumanoidRootPart")
+            y = hrp and hrp.Position.Y or (instance2.Position.Y - 1.5)
+        else
+            y = instance2.Position.Y - 1.5
+        end
+        local position4 = instance2.Position
+        local n207 = position4 - unit * n206
+        local vector4 = Vector3.new(n207.X, y, n207.Z)
+        return CFrame.lookAt(vector4, Vector3.new(position4.X, vector4.Y, position4.Z))
     end
-    local p = pos + unit * oz + unitR * ox + Vector3.new(0, oy, 0)
-    return CFrame.lookAt(p, p - unit)
+
+    hbApplyCFrame = function(arg)
+        if tbl.Hipbang and HipbangTarget and HipbangTarget.Character and humanoidRootPart then
+            local head = HipbangTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = HipbangTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = hbComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    hbActivate = function()
+        if not hbSetup() then return end
+        if HipbangTarget then
+            if tbl.NoDelay then
+                local hrp = HipbangTarget.Character and HipbangTarget.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then setPhysicsRep(hrp) end
+            end
+        end
+    end
+
+    hbDeactivate = function()
+        local v6 = HipbangTarget or TargetPlayer
+        hbCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        HipbangTarget = nil
+        clearAutoSelectedTarget()
+    end
 end
 
-simpleAttachState.Pat = makeSimpleAttach("Pat", "114022540397953", patCompute)
-simpleAttachState.Headsit = makeSimpleAttach("Headsit", "2506281703", hsCompute)
-simpleAttachState.Backhug = makeSimpleAttach("Backhug", "117991975031893", bhCompute)
-simpleAttachState.Fronthug = makeSimpleAttach("Fronthug", "117991975031893", fhCompute)
-simpleAttachState.Propose = makeSimpleAttach("Propose", "107416091886634", prCompute)
-simpleAttachState.Bagpack = makeSimpleAttach("Bagpack", "178130996", bgpCompute)
-simpleAttachState.Goon = makeSimpleAttach("Goon", "136828069054505", goonCompute)
-simpleAttachState.CustomAttach = makeSimpleAttach("CustomAttach", "", customCompute)
+-- ============================================
+-- HEADSIT (exact from source)
+-- ============================================
+do
+    local hsSetupChar = nil
+    local hsOriginalParts = {}
+    local hsWasAnimateDisabled = false
+    local hsAnimTrack = nil
 
--- target resolution
-local function isTargetValidAndAlive(model)
-    if not model then return false end
-    local char = model.Character
-    if not char then return false end
-    local h = char:FindFirstChildOfClass("Humanoid")
-    if not h or h.Health <= 0 then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
-    if not hrp then return false end
-    return true
+    hsCleanup = function()
+        clearPhysicsRep()
+        if hsAnimTrack then
+            pcall(function() hsAnimTrack:Stop(0); hsAnimTrack:Destroy() end)
+            hsAnimTrack = nil
+        end
+        if humanoid then
+            humanoid.Sit = false
+            humanoid.AutoRotate = true
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        if character then
+            local animate = character:FindFirstChild("Animate")
+            if animate and hsWasAnimateDisabled then
+                animate.Disabled = false
+                hsWasAnimateDisabled = false
+            end
+        end
+        if hsSetupChar == character then
+            for k, v6 in pairs(hsOriginalParts) do
+                if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+            end
+            table.clear(hsOriginalParts)
+        end
+        hsSetupChar = nil
+    end
+
+    hsSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if HeadsitTarget and HeadsitTarget.Character and humanoidRootPart and humanoid and character2 then
+            if hsSetupChar ~= character2 or not humanoid.Sit then
+                hsCleanup()
+                local animate = character2:FindFirstChild("Animate")
+                if animate and not animate.Disabled then
+                    animate.Disabled = true
+                    hsWasAnimateDisabled = true
+                end
+                local animator = humanoid:FindFirstChildOfClass("Animator")
+                if animator then
+                    for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+                    pcall(function()
+                        local sit = animate and animate:FindFirstChild("sit") and animate.sit:FindFirstChildOfClass("Animation")
+                        if not sit then
+                            sit = Instance.new("Animation")
+                            if humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+                                sit.AnimationId = "rbxassetid://178130996"
+                            else
+                                sit.AnimationId = "rbxassetid://2506281703"
+                            end
+                        end
+                        hsAnimTrack = animator:LoadAnimation(sit)
+                        hsAnimTrack.Priority = Enum.AnimationPriority.Action4
+                        hsAnimTrack.Looped = true
+                        hsAnimTrack:Play()
+                    end)
+                end
+                for _, part in ipairs(character2:GetDescendants() or {}) do
+                    if part:IsA("BasePart") then
+                        hsOriginalParts[part] = { CanCollide = part.CanCollide }
+                        part.CanCollide = false
+                    end
+                end
+                humanoid.Sit = true
+                humanoid.AutoRotate = false
+                pcall(function() Workspace.Gravity = 0 end)
+                hsSetupChar = character2
+                return true
+            end
+            return true
+        end
+    end
+
+    hsComputeCFrame = function(arg)
+        return arg.CFrame * CFrame.new(0, 1.5, 0)
+    end
+
+    hsApplyCFrame = function(arg)
+        if tbl.Headsit and HeadsitTarget and HeadsitTarget.Character and humanoidRootPart then
+            local head = HeadsitTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = HeadsitTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = hsComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    hsActivate = function()
+        hsSetup()
+    end
+
+    hsDeactivate = function()
+        local v6 = HeadsitTarget or TargetPlayer
+        hsCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        HeadsitTarget = nil
+        clearAutoSelectedTarget()
+    end
 end
 
+-- ============================================
+-- BACKHUG (exact from source)
+-- ============================================
+do
+    local bhSetupChar = nil
+    local bhWasAnimateDisabled = false
+    local bhAnimTrack = nil
+    local bhOriginalParts = {}
+
+    bhCleanup = function()
+        clearPhysicsRep()
+        if bhAnimTrack then
+            pcall(function() bhAnimTrack:Stop(0); bhAnimTrack:Destroy() end)
+            bhAnimTrack = nil
+        end
+        local flag8 = false
+        for _, v6 in ipairs(AttachFeatures) do
+            if tbl[v6] then flag8 = true; break end
+        end
+        if not flag8 then
+            if character then
+                local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+                if humanoid2 then
+                    humanoid2.PlatformStand = false
+                    humanoid2.AutoRotate = true
+                    pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+                end
+                if bhWasAnimateDisabled then
+                    local animate = character:FindFirstChild("Animate")
+                    if animate then animate.Disabled = false end
+                    bhWasAnimateDisabled = false
+                end
+            end
+            pcall(function() Workspace.Gravity = 192.2 end)
+        end
+        for k, v6 in pairs(bhOriginalParts) do
+            if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+        end
+        table.clear(bhOriginalParts)
+        bhSetupChar = nil
+    end
+
+    bhSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if bhSetupChar == character2 then
+            if bhAnimTrack and bhAnimTrack.IsPlaying then return true end
+            bhSetupChar = nil
+        end
+        bhCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            bhWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://117991975031893"
+            bhAnimTrack = animator:LoadAnimation(animation)
+            bhAnimTrack.Priority = Enum.AnimationPriority.Action4
+            bhAnimTrack.Looped = true
+            bhAnimTrack:Play(0.1, 1, 1)
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                bhOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        bhSetupChar = character2
+        return true
+    end
+
+    bhComputeCFrame = function(instance2)
+        local lookVector = instance2.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local parent = instance2.Parent
+        local y
+        if parent then
+            local hrp = parent:FindFirstChild("HumanoidRootPart")
+            y = hrp and hrp.Position.Y or (instance2.Position.Y - 1.5)
+        else
+            y = instance2.Position.Y - 1.5
+        end
+        local position4 = instance2.Position
+        local n206 = position4 - unit * 1.25
+        local vector4 = Vector3.new(n206.X, y, n206.Z)
+        return CFrame.lookAt(vector4, Vector3.new(position4.X, vector4.Y, position4.Z))
+    end
+
+    bhApplyCFrame = function(arg)
+        if tbl.Backhug and BackhugTarget and BackhugTarget.Character and humanoidRootPart then
+            local head = BackhugTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = BackhugTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = bhComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    bhActivate = function()
+        bhSetup()
+    end
+
+    bhDeactivate = function()
+        local v6 = BackhugTarget or TargetPlayer
+        bhCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        BackhugTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- FRONTHUG (exact from source)
+-- ============================================
+do
+    local fhSetupChar = nil
+    local fhWasAnimateDisabled = false
+    local fhAnimTrack = nil
+    local fhOriginalParts = {}
+
+    fhCleanup = function()
+        clearPhysicsRep()
+        if fhAnimTrack then
+            pcall(function() fhAnimTrack:Stop(0); fhAnimTrack:Destroy() end)
+            fhAnimTrack = nil
+        end
+        local flag8 = false
+        for _, v6 in ipairs(AttachFeatures) do
+            if tbl[v6] then flag8 = true; break end
+        end
+        if not flag8 then
+            if character then
+                local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+                if humanoid2 then
+                    humanoid2.PlatformStand = false
+                    humanoid2.AutoRotate = true
+                    pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+                end
+                if fhWasAnimateDisabled then
+                    local animate = character:FindFirstChild("Animate")
+                    if animate then animate.Disabled = false end
+                    fhWasAnimateDisabled = false
+                end
+            end
+            pcall(function() Workspace.Gravity = 192.2 end)
+        end
+        for k, v6 in pairs(fhOriginalParts) do
+            if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+        end
+        table.clear(fhOriginalParts)
+        fhSetupChar = nil
+    end
+
+    fhSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if fhSetupChar == character2 then
+            if fhAnimTrack and fhAnimTrack.IsPlaying then return true end
+            fhSetupChar = nil
+        end
+        fhCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            fhWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://117991975031893"
+            fhAnimTrack = animator:LoadAnimation(animation)
+            fhAnimTrack.Priority = Enum.AnimationPriority.Action4
+            fhAnimTrack.Looped = true
+            fhAnimTrack:Play(0.1, 1, 1)
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                fhOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        fhSetupChar = character2
+        return true
+    end
+
+    fhComputeCFrame = function(arg)
+        local lookVector = arg.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local position4 = arg.Position
+        local n205 = position4 + unit * 1.1
+        local n206 = position4.Y - 1.5
+        local vector3 = Vector3.new(n205.X, n206, n205.Z)
+        return CFrame.lookAt(vector3, Vector3.new(position4.X, vector3.Y, position4.Z))
+    end
+
+    fhApplyCFrame = function(arg)
+        if tbl.Fronthug and FronthugTarget and FronthugTarget.Character and humanoidRootPart then
+            local head = FronthugTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = FronthugTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = fhComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    fhActivate = function()
+        fhSetup()
+    end
+
+    fhDeactivate = function()
+        local v6 = FronthugTarget or TargetPlayer
+        fhCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        FronthugTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- PROPOSE (exact from source)
+-- ============================================
+do
+    local prSetupChar = nil
+    local prWasAnimateDisabled = false
+    local prAnimTrack = nil
+    local prOriginalParts = {}
+
+    prCleanup = function()
+        clearPhysicsRep()
+        if prAnimTrack then
+            pcall(function() prAnimTrack:Stop(0); prAnimTrack:Destroy() end)
+            prAnimTrack = nil
+        end
+        if character then
+            local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+            if humanoid2 then
+                humanoid2.PlatformStand = false
+                humanoid2.AutoRotate = true
+                pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            end
+            if prWasAnimateDisabled then
+                local animate = character:FindFirstChild("Animate")
+                if animate then animate.Disabled = false end
+                prWasAnimateDisabled = false
+            end
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        for k, v6 in pairs(prOriginalParts) do
+            if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+        end
+        table.clear(prOriginalParts)
+        prSetupChar = nil
+    end
+
+    prSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if prSetupChar == character2 then
+            if prAnimTrack and prAnimTrack.IsPlaying then return true end
+            prSetupChar = nil
+        end
+        prCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            prWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://107416091886634"
+            prAnimTrack = animator:LoadAnimation(animation)
+            prAnimTrack.Priority = Enum.AnimationPriority.Action4
+            prAnimTrack.Looped = true
+            prAnimTrack:Play(0.1, 1, 1)
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                prOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        prSetupChar = character2
+        return true
+    end
+
+    prComputeCFrame = function(instance2)
+        local lookVector = instance2.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local parent = instance2.Parent
+        local y
+        if parent then
+            local hrp = parent:FindFirstChild("HumanoidRootPart")
+            y = hrp and hrp.Position.Y or (instance2.Position.Y - 1.5)
+        else
+            y = instance2.Position.Y - 1.5
+        end
+        local position4 = instance2.Position
+        local n206 = position4 + unit * 3.5
+        local vector3 = Vector3.new(n206.X, y, n206.Z)
+        return CFrame.lookAt(vector3, Vector3.new(position4.X, vector3.Y, position4.Z))
+    end
+
+    prApplyCFrame = function(arg)
+        if tbl.Propose and ProposeTarget and ProposeTarget.Character and humanoidRootPart then
+            local head = ProposeTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = ProposeTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = prComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    prActivate = function()
+        prSetup()
+    end
+
+    prDeactivate = function()
+        local v6 = ProposeTarget or TargetPlayer
+        prCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        ProposeTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- BAGPACK (exact from source)
+-- ============================================
+do
+    local bgpSetupChar = nil
+    local bgpOriginalParts = {}
+    local bgpWasAnimateDisabled = false
+    local bgpAnimTrack = nil
+
+    bgpCleanup = function()
+        clearPhysicsRep()
+        if bgpAnimTrack then
+            pcall(function() bgpAnimTrack:Stop(0); bgpAnimTrack:Destroy() end)
+            bgpAnimTrack = nil
+        end
+        if humanoid then
+            humanoid.Sit = false
+            humanoid.AutoRotate = true
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        if character then
+            local animate = character:FindFirstChild("Animate")
+            if animate and bgpWasAnimateDisabled then
+                animate.Disabled = false
+                bgpWasAnimateDisabled = false
+            end
+        end
+        if bgpSetupChar == character then
+            for k, v6 in pairs(bgpOriginalParts) do
+                if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+            end
+            table.clear(bgpOriginalParts)
+        end
+        bgpSetupChar = nil
+    end
+
+    bgpSetup = function()
+        local character2 = localPlayer.Character or character
+        if BagpackTarget and BagpackTarget.Character and humanoidRootPart and humanoid and character2 then
+            if bgpSetupChar ~= character2 or not humanoid.Sit then
+                bgpCleanup()
+                local animate = character2:FindFirstChild("Animate")
+                if animate and not animate.Disabled then
+                    animate.Disabled = true
+                    bgpWasAnimateDisabled = true
+                end
+                local animator = humanoid:FindFirstChildOfClass("Animator")
+                if animator then
+                    for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+                    pcall(function()
+                        local sit = animate and animate:FindFirstChild("sit") and animate.sit:FindFirstChildOfClass("Animation")
+                        if not sit then
+                            sit = Instance.new("Animation")
+                            if humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+                                sit.AnimationId = "rbxassetid://178130996"
+                            else
+                                sit.AnimationId = "rbxassetid://2506281703"
+                            end
+                        end
+                        bgpAnimTrack = animator:LoadAnimation(sit)
+                        bgpAnimTrack.Priority = Enum.AnimationPriority.Action4
+                        bgpAnimTrack.Looped = true
+                        bgpAnimTrack:Play()
+                    end)
+                end
+                for _, part in ipairs(character2:GetDescendants() or {}) do
+                    if part:IsA("BasePart") then
+                        bgpOriginalParts[part] = { CanCollide = part.CanCollide }
+                        part.CanCollide = false
+                    end
+                end
+                humanoid.Sit = true
+                humanoid.AutoRotate = false
+                pcall(function() Workspace.Gravity = 0 end)
+                bgpSetupChar = character2
+                return true
+            end
+            return true
+        end
+    end
+
+    bgpComputeCFrame = function(arg)
+        local lookVector = arg.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local position4 = arg.Position
+        local n204 = position4 - unit * 1
+        local vector3 = Vector3.new(n204.X, position4.Y + 0.5, n204.Z)
+        return CFrame.lookAt(vector3, vector3 - unit)
+    end
+
+    bgpApplyCFrame = function(arg)
+        if tbl.Bagpack and BagpackTarget and BagpackTarget.Character and humanoidRootPart then
+            local humanoidRootPart2 = BagpackTarget.Character:FindFirstChild("HumanoidRootPart")
+            if not humanoidRootPart2 then return false end
+            local cFrame = bgpComputeCFrame(humanoidRootPart2)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    bgpActivate = function()
+        bgpSetup()
+    end
+
+    bgpDeactivate = function()
+        local v6 = BagpackTarget or TargetPlayer
+        bgpCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        BagpackTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- GOON (exact from source)
+-- ============================================
+do
+    local goonSetupChar = nil
+    local goonOriginalParts = {}
+    local goonAnimTrack = nil
+    local goonWasAnimateDisabled = false
+
+    goonCleanup = function()
+        clearPhysicsRep()
+        if goonAnimTrack then
+            pcall(function() goonAnimTrack:Stop(0); goonAnimTrack:Destroy() end)
+            goonAnimTrack = nil
+        end
+        if character then
+            local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+            if humanoid2 then
+                humanoid2.PlatformStand = false
+                humanoid2.AutoRotate = true
+                pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            end
+            if goonWasAnimateDisabled then
+                local animate = character:FindFirstChild("Animate")
+                if animate then animate.Disabled = false end
+                goonWasAnimateDisabled = false
+            end
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        for k, v6 in pairs(goonOriginalParts) do
+            if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+        end
+        table.clear(goonOriginalParts)
+        goonSetupChar = nil
+    end
+
+    goonSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if goonSetupChar == character2 then
+            if goonAnimTrack and goonAnimTrack.IsPlaying then return true end
+            goonSetupChar = nil
+        end
+        goonCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            goonWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://136828069054505"
+            goonAnimTrack = animator:LoadAnimation(animation)
+            goonAnimTrack.Priority = Enum.AnimationPriority.Action4
+            goonAnimTrack.Looped = true
+            goonAnimTrack:Play()
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                goonOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        goonSetupChar = character2
+        return true
+    end
+
+    goonComputeCFrame = function(instance2)
+        local parent = instance2.Parent
+        if parent then
+            local hrp = parent:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local lookVector = hrp.CFrame.LookVector
+                local rightVector = hrp.CFrame.RightVector
+                local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+                local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+                local vector3 = Vector3.new(rightVector.X, 0, rightVector.Z)
+                local unit3 = vector3.Magnitude > 0 and vector3.Unit or Vector3.new(1,0,0)
+                local n205 = hrp.Position + unit * 4.5 + -unit3 * 1.2
+                local vector4 = Vector3.new(n205.X, instance2.Position.Y + 1.5, n205.Z)
+                return CFrame.lookAt(vector4, vector4 - unit)
+            end
+        end
+        return instance2.CFrame * CFrame.new(0, 0, -4.5)
+    end
+
+    goonApplyCFrame = function(arg)
+        if tbl.Goon and GoonTarget and GoonTarget.Character and humanoidRootPart then
+            local head = GoonTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = GoonTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = goonComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    goonActivate = function()
+        goonSetup()
+    end
+
+    goonDeactivate = function()
+        local v6 = GoonTarget or TargetPlayer
+        goonCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        GoonTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- PAT (exact from source)
+-- ============================================
+do
+    local patOriginalParts = {}
+    local patSetupChar = nil
+    local patAnimTrack = nil
+    local patWasAnimateDisabled = false
+
+    patCleanup = function()
+        clearPhysicsRep()
+        if patAnimTrack then
+            pcall(function() patAnimTrack:Stop(0); patAnimTrack:Destroy() end)
+            patAnimTrack = nil
+        end
+        if patSetupChar then
+            local flag8 = false
+            for _, v6 in ipairs(AttachFeatures) do
+                if tbl[v6] then flag8 = true; break end
+            end
+            if not flag8 then
+                local humanoid2 = patSetupChar:FindFirstChildOfClass("Humanoid")
+                if humanoid2 then
+                    humanoid2.PlatformStand = false
+                    humanoid2.AutoRotate = true
+                    pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+                end
+                local animate = patSetupChar:FindFirstChild("Animate")
+                if animate and patWasAnimateDisabled then
+                    animate.Disabled = false
+                    patWasAnimateDisabled = false
+                end
+                pcall(function() Workspace.Gravity = 192.2 end)
+            end
+            for k, v6 in pairs(patOriginalParts) do
+                if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+            end
+            table.clear(patOriginalParts)
+            patSetupChar = nil
+        end
+    end
+
+    patSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if patSetupChar == character2 then
+            if patAnimTrack and patAnimTrack.IsPlaying then return true end
+            patSetupChar = nil
+        end
+        patCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            patWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        pcall(function()
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://114022540397953"
+            patAnimTrack = animator:LoadAnimation(animation)
+            patAnimTrack.Priority = Enum.AnimationPriority.Action4
+            patAnimTrack.Looped = true
+            patAnimTrack:Play(0.1, 1, 1)
+        end)
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                patOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        patSetupChar = character2
+        return true
+    end
+
+    patComputeCFrame = function(instance2)
+        local lookVector = instance2.CFrame.LookVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local parent = instance2.Parent
+        local y
+        if parent then
+            local hrp = parent:FindFirstChild("HumanoidRootPart")
+            y = hrp and hrp.Position.Y or (instance2.Position.Y - 1.5)
+        else
+            y = instance2.Position.Y - 1.5
+        end
+        local position4 = instance2.Position
+        local n204 = position4 + unit * 2.5
+        local vector3 = Vector3.new(n204.X, y, n204.Z)
+        return CFrame.lookAt(vector3, Vector3.new(position4.X, vector3.Y, position4.Z))
+    end
+
+    patApplyCFrame = function(arg)
+        if tbl.Pat and PatTarget and PatTarget.Character and humanoidRootPart then
+            local head = PatTarget.Character:FindFirstChild("Head")
+            if not head then return false end
+            local humanoidRootPart2 = PatTarget.Character:FindFirstChild("HumanoidRootPart")
+            local cFrame = patComputeCFrame(head)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" and humanoidRootPart2 then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                if humanoidRootPart2 then
+                    humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                    humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+                else
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                    humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    patActivate = function()
+        patSetup()
+    end
+
+    patDeactivate = function()
+        local v6 = PatTarget or TargetPlayer
+        patCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        PatTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- CUSTOM ATTACH (exact from source)
+-- ============================================
+do
+    local customAttachSetupChar = nil
+    local customAttachOriginalParts = {}
+    local customAttachAnimTrack = nil
+    local customAttachWasAnimateDisabled = false
+
+    customAttachCleanup = function()
+        clearPhysicsRep()
+        if customAttachAnimTrack then
+            pcall(function() customAttachAnimTrack:Stop(0); customAttachAnimTrack:Destroy() end)
+            customAttachAnimTrack = nil
+        end
+        if character then
+            local humanoid2 = character:FindFirstChildOfClass("Humanoid")
+            if humanoid2 then
+                humanoid2.PlatformStand = false
+                humanoid2.AutoRotate = true
+                pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            end
+            if customAttachWasAnimateDisabled then
+                local animate = character:FindFirstChild("Animate")
+                if animate then animate.Disabled = false end
+                customAttachWasAnimateDisabled = false
+            end
+        end
+        pcall(function() Workspace.Gravity = 192.2 end)
+        for k, v6 in pairs(customAttachOriginalParts) do
+            if k and k.Parent then pcall(function() k.CanCollide = v6.CanCollide end) end
+        end
+        table.clear(customAttachOriginalParts)
+        customAttachSetupChar = nil
+    end
+
+    customAttachSetup = function()
+        local character2 = localPlayer.Character or character
+        if not character2 then return end
+        if customAttachSetupChar == character2 then
+            if customAttachAnimTrack and customAttachAnimTrack.IsPlaying then return true end
+            customAttachSetupChar = nil
+        end
+        customAttachCleanup()
+        local humanoid2 = character2:FindFirstChildOfClass("Humanoid")
+        if not humanoid2 then return end
+        humanoid2.AutoRotate = false
+        local animator = humanoid2:FindFirstChildOfClass("Animator")
+        if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid2 end
+        local animate = character2:FindFirstChild("Animate")
+        if animate and not animate.Disabled then
+            animate.Disabled = true
+            customAttachWasAnimateDisabled = true
+        end
+        for _, v6 in ipairs(animator:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        for _, v6 in ipairs(humanoid2:GetPlayingAnimationTracks() or {}) do pcall(function() v6:Stop(0) end) end
+        humanoid2.PlatformStand = true
+        pcall(function() humanoid2:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Workspace.Gravity = 0 end)
+        if #CustomAttachEmoteId > 0 then
+            pcall(function()
+                local animation = Instance.new("Animation")
+                animation.AnimationId = "rbxassetid://" .. CustomAttachEmoteId
+                customAttachAnimTrack = animator:LoadAnimation(animation)
+                customAttachAnimTrack.Priority = Enum.AnimationPriority.Action4
+                customAttachAnimTrack.Looped = true
+                customAttachAnimTrack:Play()
+            end)
+        end
+        for _, part in ipairs(character2:GetDescendants() or {}) do
+            if part:IsA("BasePart") then
+                customAttachOriginalParts[part] = { CanCollide = part.CanCollide }
+                part.CanCollide = false
+            end
+        end
+        customAttachSetupChar = character2
+        return true
+    end
+
+    customAttachComputeCFrame = function(arg)
+        if not arg then return CFrame.new() end
+        local n207 = tonumber(CustomAttachOffsetX) or 0
+        local n208 = tonumber(CustomAttachOffsetY) or 0
+        local n209 = tonumber(CustomAttachOffsetZ) or 2.5
+        local behind = CustomAttachFacing == "Behind"
+        local lookVector = arg.CFrame.LookVector
+        local rightVector = arg.CFrame.RightVector
+        local vector2 = Vector3.new(lookVector.X, 0, lookVector.Z)
+        local unit = vector2.Magnitude > 0 and vector2.Unit or Vector3.new(0,0,1)
+        local vector3 = Vector3.new(rightVector.X, 0, rightVector.Z)
+        local unit4 = vector3.Magnitude > 0 and vector3.Unit or Vector3.new(1,0,0)
+        local position4 = arg.Position
+        if behind then
+            local n210 = position4 + -unit * n209 + unit4 * n207 + Vector3.new(0, n208, 0)
+            return CFrame.lookAt(n210, n210 + unit)
+        end
+        local n210 = position4 + unit * n209 + unit4 * n207 + Vector3.new(0, n208, 0)
+        return CFrame.lookAt(n210, n210 - unit)
+    end
+
+    customAttachApplyCFrame = function(arg)
+        if tbl.CustomAttach and CustomAttachTarget and CustomAttachTarget.Character and humanoidRootPart then
+            local humanoidRootPart2 = CustomAttachTarget.Character:FindFirstChild("HumanoidRootPart") or CustomAttachTarget.Character:FindFirstChild("Torso")
+            if not humanoidRootPart2 then return false end
+            local cFrame = customAttachComputeCFrame(humanoidRootPart2)
+            if arg and tbl.NoDelay and typeof(sethiddenproperty) == "function" then
+                humanoidRootPart.CFrame = humanoidRootPart2.CFrame:ToObjectSpace(cFrame)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+            else
+                humanoidRootPart.CFrame = cFrame
+                humanoidRootPart.AssemblyLinearVelocity = humanoidRootPart2.AssemblyLinearVelocity
+                humanoidRootPart.AssemblyAngularVelocity = humanoidRootPart2.AssemblyAngularVelocity
+            end
+            pcall(function() humanoidRootPart.Velocity = humanoidRootPart.AssemblyLinearVelocity end)
+            pcall(function() humanoidRootPart.RotVelocity = Vector3.zero end)
+            return true
+        end
+        return false
+    end
+
+    customAttachActivate = function()
+        customAttachSetup()
+    end
+
+    customAttachDeactivate = function()
+        local v6 = CustomAttachTarget or TargetPlayer
+        customAttachCleanup()
+        if v6 and v6.Character then
+            pcall(function()
+                local hrp2 = v6.Character:FindFirstChild("HumanoidRootPart")
+                if hrp2 and humanoidRootPart then
+                    humanoidRootPart.CFrame = hrp2.CFrame * CFrame.new(0, 0, 2)
+                end
+            end)
+        end
+        CustomAttachTarget = nil
+        clearAutoSelectedTarget()
+    end
+end
+
+-- ============================================
+-- TARGET RESOLUTION
+-- ============================================
 resolveAttachTarget = function(feature, needHead)
-    local fallback = TargetPlayer or FacebangTarget or HipbangTarget or PatTarget
-        or HeadsitTarget or BackhugTarget or FronthugTarget or ProposeTarget
-        or BagpackTarget or GoonTarget or CustomAttachTarget
+    local fallback = ctxTargetPlayer or TargetPlayer
     if fallback and fallback.Character then
         if needHead and not fallback.Character:FindFirstChild("Head") then
-            return nil
+            fallback = nil
         end
-        return fallback
     end
+    if fallback then return fallback end
     -- pick nearest
-    local nearest, dist = nil, math.huge
     local myChar = localPlayer.Character
     local myHrp = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso"))
     if not myHrp then return nil end
+    local nearest, dist = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= localPlayer and p.Character then
             local hrp = p.Character:FindFirstChild("HumanoidRootPart") or p.Character:FindFirstChild("Torso")
@@ -788,14 +1866,14 @@ resolveAttachTarget = function(feature, needHead)
 end
 
 syncAttachTarget = function(p)
-    if p then
-        TargetPlayer = p
-    end
+    if p then TargetPlayer = p end
 end
 
 clearAutoSelectedTarget = function() end
 
--- set attach state
+-- ============================================
+-- SET ATTACH STATE
+-- ============================================
 SetAttachState = function(name, on)
     if on then
         if tbl.AdminDisabled or tbl.AttachLockedDisabled then
@@ -806,7 +1884,6 @@ SetAttachState = function(name, on)
             SendNotification("Blocked", "Cannot attach while frozen!", 2)
             return
         end
-        -- turn off others
         for _, f in ipairs(AttachFeatures) do
             if f ~= name and tbl[f] then
                 SendNotification("Blocked", "Turn off " .. f .. " first!", 2)
@@ -819,31 +1896,49 @@ SetAttachState = function(name, on)
             return
         end
         if name == "Facebang" then
-            FacebangTarget = tgt; fbSetup()
+            FacebangTarget = tgt; fbActivate()
         elseif name == "Hipbang" then
-            HipbangTarget = tgt; hbSetup()
-        else
-            simpleAttachState[name].setup()
+            HipbangTarget = tgt; hbActivate()
+        elseif name == "Pat" then
+            PatTarget = tgt; patActivate()
+        elseif name == "Headsit" then
+            HeadsitTarget = tgt; hsActivate()
+        elseif name == "Backhug" then
+            BackhugTarget = tgt; bhActivate()
+        elseif name == "Fronthug" then
+            FronthugTarget = tgt; fhActivate()
+        elseif name == "Propose" then
+            ProposeTarget = tgt; prActivate()
+        elseif name == "Bagpack" then
+            BagpackTarget = tgt; bgpActivate()
+        elseif name == "Goon" then
+            GoonTarget = tgt; goonActivate()
+        elseif name == "CustomAttach" then
+            CustomAttachTarget = tgt; customAttachActivate()
         end
         tbl[name] = true
         TargetPlayer = tgt
     else
-        if name == "Facebang" then
-            fbCleanup()
-            FacebangTarget = nil
-        elseif name == "Hipbang" then
-            hbCleanup()
-            HipbangTarget = nil
-        else
-            if simpleAttachState[name] then simpleAttachState[name].cleanup() end
+        if name == "Facebang" then fbDeactivate()
+        elseif name == "Hipbang" then hbDeactivate()
+        elseif name == "Pat" then patDeactivate()
+        elseif name == "Headsit" then hsDeactivate()
+        elseif name == "Backhug" then bhDeactivate()
+        elseif name == "Fronthug" then fhDeactivate()
+        elseif name == "Propose" then prDeactivate()
+        elseif name == "Bagpack" then bgpDeactivate()
+        elseif name == "Goon" then goonDeactivate()
+        elseif name == "CustomAttach" then customAttachDeactivate()
         end
         tbl[name] = false
     end
 end
 
--- main loop
+-- ============================================
+-- MAIN LOOP
+-- ============================================
 RunService.Heartbeat:Connect(function()
-    if not humanoidRootPart then
+    if not humanoidRootPart or not humanoidRootPart.Parent then
         character = localPlayer.Character
         if character then
             humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -858,17 +1953,109 @@ RunService.Heartbeat:Connect(function()
     if tbl.Hipbang and HipbangTarget and isTargetValidAndAlive(HipbangTarget) then
         hbApplyCFrame(true)
     end
-    for _, name in ipairs({"Pat","Headsit","Backhug","Fronthug","Propose","Bagpack","Goon","CustomAttach"}) do
-        if tbl[name] and TargetPlayer and isTargetValidAndAlive(TargetPlayer) then
-            simpleAttachState[name].apply(true)
+    if tbl.Pat and PatTarget and isTargetValidAndAlive(PatTarget) then
+        patApplyCFrame(true)
+    end
+    if tbl.Headsit and HeadsitTarget and isTargetValidAndAlive(HeadsitTarget) then
+        hsApplyCFrame(true)
+    end
+    if tbl.Backhug and BackhugTarget and isTargetValidAndAlive(BackhugTarget) then
+        bhApplyCFrame(true)
+    end
+    if tbl.Fronthug and FronthugTarget and isTargetValidAndAlive(FronthugTarget) then
+        fhApplyCFrame(true)
+    end
+    if tbl.Propose and ProposeTarget and isTargetValidAndAlive(ProposeTarget) then
+        prApplyCFrame(true)
+    end
+    if tbl.Bagpack and BagpackTarget and isTargetValidAndAlive(BagpackTarget) then
+        bgpApplyCFrame(true)
+    end
+    if tbl.Goon and GoonTarget and isTargetValidAndAlive(GoonTarget) then
+        goonApplyCFrame(true)
+    end
+    if tbl.CustomAttach and CustomAttachTarget and isTargetValidAndAlive(CustomAttachTarget) then
+        customAttachApplyCFrame(true)
+    end
+end)
+
+-- also update physics rep / follow target teleport like source
+RunService.Stepped:Connect(function()
+    if not humanoidRootPart then return end
+    if tbl.NoDelay then
+        pcall(function()
+            sethiddenproperty(localPlayer, "SimulationRadius", 112412400000)
+            sethiddenproperty(localPlayer, "MaxSimulationRadius", 112412400000)
+            settings().Physics.AllowSleep = false
+        end)
+        if tbl.Pat and PatTarget and isTargetValidAndAlive(PatTarget) then
+            local hrp = PatTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            patApplyCFrame(true)
         end
+        if tbl.Facebang and FacebangTarget and isTargetValidAndAlive(FacebangTarget) then
+            local hrp = FacebangTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            fbApplyCFrame(true)
+        end
+        if tbl.Headsit and HeadsitTarget and isTargetValidAndAlive(HeadsitTarget) then
+            local hrp = HeadsitTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            hsApplyCFrame(true)
+        end
+        if tbl.Backhug and BackhugTarget and isTargetValidAndAlive(BackhugTarget) then
+            local hrp = BackhugTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            bhApplyCFrame(true)
+        end
+        if tbl.Fronthug and FronthugTarget and isTargetValidAndAlive(FronthugTarget) then
+            local hrp = FronthugTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            fhApplyCFrame(true)
+        end
+        if tbl.Propose and ProposeTarget and isTargetValidAndAlive(ProposeTarget) then
+            local hrp = ProposeTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            prApplyCFrame(true)
+        end
+        if tbl.Hipbang and HipbangTarget and isTargetValidAndAlive(HipbangTarget) then
+            local hrp = HipbangTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            hbApplyCFrame(true)
+        end
+        if tbl.Bagpack and BagpackTarget and isTargetValidAndAlive(BagpackTarget) then
+            local hrp = BagpackTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            bgpApplyCFrame(true)
+        end
+        if tbl.Goon and GoonTarget and isTargetValidAndAlive(GoonTarget) then
+            local hrp = GoonTarget.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then setPhysicsRep(hrp) end
+            goonApplyCFrame(true)
+        end
+        if tbl.CustomAttach and CustomAttachTarget and isTargetValidAndAlive(CustomAttachTarget) then
+            local hrp = CustomAttachTarget.Character:FindFirstChild("HumanoidRootPart") or CustomAttachTarget.Character:FindFirstChild("Torso")
+            if hrp then setPhysicsRep(hrp) end
+            customAttachApplyCFrame(true)
+        end
+    else
+        -- without No Delay, still apply CFrame updates
+        if tbl.Pat and PatTarget and isTargetValidAndAlive(PatTarget) then patApplyCFrame(false) end
+        if tbl.Facebang and FacebangTarget and isTargetValidAndAlive(FacebangTarget) then fbApplyCFrame(false) end
+        if tbl.Headsit and HeadsitTarget and isTargetValidAndAlive(HeadsitTarget) then hsApplyCFrame(false) end
+        if tbl.Backhug and BackhugTarget and isTargetValidAndAlive(BackhugTarget) then bhApplyCFrame(false) end
+        if tbl.Fronthug and FronthugTarget and isTargetValidAndAlive(FronthugTarget) then fhApplyCFrame(false) end
+        if tbl.Propose and ProposeTarget and isTargetValidAndAlive(ProposeTarget) then prApplyCFrame(false) end
+        if tbl.Hipbang and HipbangTarget and isTargetValidAndAlive(HipbangTarget) then hbApplyCFrame(false) end
+        if tbl.Bagpack and BagpackTarget and isTargetValidAndAlive(BagpackTarget) then bgpApplyCFrame(false) end
+        if tbl.Goon and GoonTarget and isTargetValidAndAlive(GoonTarget) then goonApplyCFrame(false) end
+        if tbl.CustomAttach and CustomAttachTarget and isTargetValidAndAlive(CustomAttachTarget) then customAttachApplyCFrame(false) end
     end
 end)
 
 -- ============================================
 -- UI
 -- ============================================
-
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "EternityAttachOnly"
 screenGui.ResetOnSpawn = false
@@ -880,10 +2067,8 @@ pcall(function()
 end)
 if not screenGui.Parent then screenGui.Parent = localPlayer:WaitForChild("PlayerGui") end
 
--- drag state
 local dragging, dragInput, dragStart, startPos = false, nil, nil, nil
 
--- main frame
 local mainFrame = Instance.new("Frame", screenGui)
 mainFrame.Name = "MainGUI"
 mainFrame.AnchorPoint = Vector2.new(0.5, 1)
@@ -917,7 +2102,6 @@ do
 end
 
 local bgImage = Instance.new("ImageLabel", mainFrame)
-bgImage.Name = "BgImage"
 bgImage.Size = UDim2.new(1, 0, 1, 0)
 bgImage.BackgroundTransparency = 1
 bgImage.ImageTransparency = 0.55
@@ -927,9 +2111,7 @@ bgImage.ImageColor3 = tbl3.accent
 bgImage.ZIndex = 0
 corner(bgImage, 16)
 
--- title bar
 local titleBar = Instance.new("Frame", mainFrame)
-titleBar.Name = "TitleBar"
 titleBar.Size = UDim2.new(1, 0, 0, 36)
 titleBar.BackgroundColor3 = tbl3.bgCard
 titleBar.BackgroundTransparency = 1
@@ -945,7 +2127,17 @@ titleLogo.BackgroundTransparency = 1
 titleLogo.ScaleType = Enum.ScaleType.Fit
 titleLogo.ZIndex = 11
 
--- close / minimize buttons (mac style)
+local titleText = Instance.new("TextLabel", titleBar)
+titleText.Size = UDim2.new(0, 200, 1, 0)
+titleText.Position = UDim2.new(0, 78, 0, 0)
+titleText.Text = "ETERNITY // ATTACH"
+titleText.Font = Enum.Font.GothamBold
+titleText.TextSize = 11
+titleText.TextColor3 = tbl3.accent
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.BackgroundTransparency = 1
+titleText.ZIndex = 11
+
 local closeBtn = Instance.new("TextButton", titleBar)
 closeBtn.Size = UDim2.new(0, 12, 0, 12)
 closeBtn.Position = UDim2.new(1, -38, 0.5, -6)
@@ -981,15 +2173,12 @@ minBtn.MouseLeave:Connect(function()
     tween(minBtn, { BackgroundColor3 = Color3.fromRGB(40, 201, 64) }, 0.15)
 end)
 
--- content area
 local contentArea = Instance.new("Frame", mainFrame)
-contentArea.Name = "ContentArea"
 contentArea.Size = UDim2.new(1, 0, 1, -36)
 contentArea.Position = UDim2.new(0, 0, 0, 36)
 contentArea.BackgroundTransparency = 1
 contentArea.ClipsDescendants = true
 
--- page (scrolling)
 local page = Instance.new("ScrollingFrame", contentArea)
 page.Size = UDim2.new(1, 0, 1, 0)
 page.BackgroundTransparency = 1
@@ -1006,7 +2195,6 @@ pageLay.SortOrder = Enum.SortOrder.LayoutOrder
 pageLay.Padding = UDim.new(0, 6)
 padding(page, 8, 8, 8, 8)
 
--- section helper
 local function createSection(text, order)
     local f = Instance.new("Frame", page)
     f.Size = UDim2.new(1, -8, 0, 28)
@@ -1024,7 +2212,6 @@ local function createSection(text, order)
     return f
 end
 
--- tooltip
 local tooltip = Instance.new("Frame", screenGui)
 tooltip.Size = UDim2.new(0, 0, 0, 24)
 tooltip.Position = UDim2.new(0, -1000, 0, -1000)
@@ -1070,9 +2257,7 @@ local function bindTooltip(obj, text)
     end)
 end
 
--- toggle builder
 local ToggleRegistry = {}
-local GridButtonVisuals = {}
 
 local function createToggle(text, tooltipText, key, order, callback)
     local frame = Instance.new("Frame", page)
@@ -1082,15 +2267,12 @@ local function createToggle(text, tooltipText, key, order, callback)
     frame.LayoutOrder = order or 0
     corner(frame, 10)
     bindTooltip(frame, tooltipText)
-
     frame.MouseEnter:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surfaceHover }, 0.2)
-        playHover()
     end)
     frame.MouseLeave:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surface }, 0.2)
     end)
-
     local lbl = Instance.new("TextLabel", frame)
     lbl.Size = UDim2.new(1, -70, 1, 0)
     lbl.Position = UDim2.new(0, 14, 0, 0)
@@ -1101,7 +2283,6 @@ local function createToggle(text, tooltipText, key, order, callback)
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.BackgroundTransparency = 1
     lbl.TextTruncate = Enum.TextTruncate.AtEnd
-
     local toggleFrame = Instance.new("Frame", frame)
     toggleFrame.Size = UDim2.new(0, 44, 0, 22)
     toggleFrame.Position = UDim2.new(1, -58, 0.5, -11)
@@ -1113,19 +2294,12 @@ local function createToggle(text, tooltipText, key, order, callback)
     ts.Color = Color3.fromRGB(255,255,255)
     ts.Thickness = 1
     ts.Transparency = 0.85
-
     local knob = Instance.new("Frame", toggleFrame)
     knob.Size = UDim2.new(0, 16, 0, 16)
     knob.Position = UDim2.new(0, 3, 0.5, -8)
     knob.BackgroundColor3 = tbl3.toggleKnob
     knob.BorderSizePixel = 0
     corner(knob, 999)
-    local knobGrad = Instance.new("UIGradient", knob)
-    knobGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,150)),
-    })
-    knobGrad.Rotation = 90
     local knobStroke = Instance.new("UIStroke", knob)
     knobStroke.Color = Color3.fromRGB(255,255,255)
     knobStroke.Thickness = 1
@@ -1140,33 +2314,23 @@ local function createToggle(text, tooltipText, key, order, callback)
     haloStroke.Color = tbl3.toggleOn
     haloStroke.Thickness = 5
     haloStroke.Transparency = 1
-
     local clickBtn = Instance.new("TextButton", frame)
     clickBtn.Size = UDim2.new(1, 0, 1, 0)
     clickBtn.BackgroundTransparency = 1
     clickBtn.Text = ""
     clickBtn.ZIndex = 5
-
     local state = tbl[key] or false
-
     local function render()
         if state then
             tween(toggleFrame, { BackgroundColor3 = Color3.fromRGB(25,25,25) }, 0.25)
-            tween(knob, {
-                BackgroundColor3 = tbl3.toggleOn,
-                Position = UDim2.new(0, 25, 0.5, -8),
-            }, 0.25, Enum.EasingStyle.Back)
+            tween(knob, { BackgroundColor3 = tbl3.toggleOn, Position = UDim2.new(0, 25, 0.5, -8) }, 0.25, Enum.EasingStyle.Back)
             tween(haloStroke, { Transparency = 0.65 }, 0.25)
         else
             tween(toggleFrame, { BackgroundColor3 = Color3.fromRGB(15,15,15) }, 0.25)
-            tween(knob, {
-                BackgroundColor3 = Color3.fromRGB(100,100,100),
-                Position = UDim2.new(0, 3, 0.5, -8),
-            }, 0.25, Enum.EasingStyle.Back)
+            tween(knob, { BackgroundColor3 = Color3.fromRGB(100,100,100), Position = UDim2.new(0, 3, 0.5, -8) }, 0.25, Enum.EasingStyle.Back)
             tween(haloStroke, { Transparency = 1 }, 0.25)
         end
     end
-
     local function setState(v, silent)
         state = v
         tbl[key] = v
@@ -1174,18 +2338,148 @@ local function createToggle(text, tooltipText, key, order, callback)
         if callback then callback(v) end
         if not silent then playClick() end
     end
-
     ToggleRegistry[key] = setState
-
     clickBtn.MouseButton1Click:Connect(function()
         setState(not state)
     end)
-
     render()
     return frame, setState
 end
 
--- keybind toggle builder
+local function createSlider(text, tooltipText, min, max, default, decimals, order, callback)
+    local frame = Instance.new("Frame", page)
+    frame.Size = UDim2.new(1, -8, 0, 60)
+    frame.BackgroundColor3 = tbl3.surface
+    frame.BorderSizePixel = 0
+    frame.LayoutOrder = order or 0
+    corner(frame, 10)
+    bindTooltip(frame, tooltipText)
+    frame.MouseEnter:Connect(function() tween(frame, { BackgroundColor3 = tbl3.surfaceHover }, 0.2) end)
+    frame.MouseLeave:Connect(function() tween(frame, { BackgroundColor3 = tbl3.surface }, 0.2) end)
+    local lbl = Instance.new("TextLabel", frame)
+    lbl.Size = UDim2.new(1, -60, 0, 18)
+    lbl.Position = UDim2.new(0, 14, 0, 8)
+    lbl.Text = text
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 12
+    lbl.TextColor3 = tbl3.white
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.BackgroundTransparency = 1
+    local sub = Instance.new("TextLabel", frame)
+    sub.Size = UDim2.new(1, -60, 0, 14)
+    sub.Position = UDim2.new(0, 14, 0, 28)
+    sub.Text = tooltipText or ""
+    sub.Font = Enum.Font.Gotham
+    sub.TextSize = 10
+    sub.TextColor3 = tbl3.textMuted
+    sub.TextXAlignment = Enum.TextXAlignment.Left
+    sub.BackgroundTransparency = 1
+    local fmt = "%." .. (decimals or 1) .. "f"
+    local valLbl = Instance.new("TextLabel", frame)
+    valLbl.Size = UDim2.new(0, 48, 0, 18)
+    valLbl.Position = UDim2.new(1, -58, 0, 8)
+    valLbl.Text = string.format(fmt, default)
+    valLbl.Font = Enum.Font.GothamBold
+    valLbl.TextSize = 11
+    valLbl.TextColor3 = tbl3.accent
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valLbl.BackgroundTransparency = 1
+    local track = Instance.new("Frame", frame)
+    track.Size = UDim2.new(0, 100, 0, 6)
+    track.Position = UDim2.new(1, -118, 0, 32)
+    track.BackgroundColor3 = Color3.fromRGB(15,15,15)
+    track.BackgroundTransparency = 0.5
+    track.BorderSizePixel = 0
+    corner(track, 999)
+    local tstroke = Instance.new("UIStroke", track)
+    tstroke.Color = Color3.fromRGB(255,255,255)
+    tstroke.Thickness = 1
+    tstroke.Transparency = 0.85
+    local fill = Instance.new("Frame", track)
+    local pct = (default - min) / (max - min)
+    fill.Size = UDim2.new(pct, 0, 1, 0)
+    fill.BackgroundColor3 = tbl3.accent
+    fill.BorderSizePixel = 0
+    corner(fill, 999)
+    local knob2 = Instance.new("Frame", fill)
+    knob2.Size = UDim2.new(0, 14, 0, 14)
+    knob2.Position = UDim2.new(1, -7, 0.5, -7)
+    knob2.BackgroundColor3 = tbl3.toggleKnob
+    knob2.BorderSizePixel = 0
+    corner(knob2, 999)
+    local dragBtn = Instance.new("TextButton", track)
+    dragBtn.Size = UDim2.new(1, 0, 1, 20)
+    dragBtn.Position = UDim2.new(0, 0, 0.5, -10)
+    dragBtn.BackgroundTransparency = 1
+    dragBtn.Text = ""
+    local dragging2 = false
+    local function update(input)
+        local p = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(p, 0, 1, 0)
+        local v = min + (max - min) * p
+        local mult = 10^decimals
+        v = math.floor(v * mult + 0.5) / mult
+        valLbl.Text = string.format(fmt, v)
+        if callback then callback(v) end
+    end
+    dragBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging2 = true
+            update(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging2 = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging2 and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+    return frame
+end
+
+local function createInputField(text, placeholder, default, order, callback)
+    local frame = Instance.new("Frame", page)
+    frame.Size = UDim2.new(1, -8, 0, 60)
+    frame.BackgroundColor3 = tbl3.surface
+    frame.BorderSizePixel = 0
+    frame.LayoutOrder = order or 0
+    corner(frame, 10)
+    local lbl = Instance.new("TextLabel", frame)
+    lbl.Size = UDim2.new(1, -16, 0, 14)
+    lbl.Position = UDim2.new(0, 14, 0, 8)
+    lbl.Text = text
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 10
+    lbl.TextColor3 = tbl3.textMuted
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.BackgroundTransparency = 1
+    local box = Instance.new("TextBox", frame)
+    box.Size = UDim2.new(1, -28, 0, 26)
+    box.Position = UDim2.new(0, 14, 0, 26)
+    box.PlaceholderText = placeholder
+    box.PlaceholderColor3 = tbl3.textDim
+    box.Text = default or ""
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 12
+    box.TextColor3 = tbl3.text
+    box.BackgroundColor3 = tbl3.input
+    box.BorderSizePixel = 0
+    box.ClearTextOnFocus = false
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    corner(box, 6)
+    padding(box, 0, 0, 8, 8)
+    if callback then
+        box.FocusLost:Connect(function(enter)
+            if enter then callback(box.Text) end
+        end)
+    end
+    return box
+end
+
 local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, order, callback)
     local frame = Instance.new("Frame", page)
     frame.Size = UDim2.new(1, -8, 0, 36)
@@ -1194,15 +2488,12 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
     frame.LayoutOrder = order or 0
     corner(frame, 10)
     bindTooltip(frame, tooltipText)
-
     frame.MouseEnter:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surfaceHover }, 0.2)
-        playHover()
     end)
     frame.MouseLeave:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surface }, 0.2)
     end)
-
     local lbl = Instance.new("TextLabel", frame)
     lbl.Size = UDim2.new(1, -130, 1, 0)
     lbl.Position = UDim2.new(0, 14, 0, 0)
@@ -1213,7 +2504,6 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.BackgroundTransparency = 1
     lbl.TextTruncate = Enum.TextTruncate.AtEnd
-
     local keyBtn = Instance.new("TextButton", frame)
     keyBtn.Size = UDim2.new(0, 44, 0, 22)
     keyBtn.Position = UDim2.new(1, -54, 0.5, -11)
@@ -1225,7 +2515,6 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
     keyBtn.TextColor3 = tbl3.white
     corner(keyBtn, 6)
     stroke(keyBtn, tbl3.divider, 1, 0.5)
-
     local toggleFrame = Instance.new("Frame", frame)
     toggleFrame.Size = UDim2.new(0, 44, 0, 22)
     toggleFrame.Position = UDim2.new(1, -108, 0.5, -11)
@@ -1243,12 +2532,6 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
     knob.BackgroundColor3 = tbl3.toggleKnob
     knob.BorderSizePixel = 0
     corner(knob, 999)
-    local knobGrad = Instance.new("UIGradient", knob)
-    knobGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,150)),
-    })
-    knobGrad.Rotation = 90
     local knobStroke = Instance.new("UIStroke", knob)
     knobStroke.Color = Color3.fromRGB(255,255,255)
     knobStroke.Thickness = 1
@@ -1263,33 +2546,23 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
     haloStroke.Color = tbl3.toggleOn
     haloStroke.Thickness = 5
     haloStroke.Transparency = 1
-
     local clickBtn = Instance.new("TextButton", frame)
     clickBtn.Size = UDim2.new(1, -60, 1, 0)
     clickBtn.BackgroundTransparency = 1
     clickBtn.Text = ""
     clickBtn.ZIndex = 5
-
     local state = tbl[key] or false
-
     local function render()
         if state then
             tween(toggleFrame, { BackgroundColor3 = Color3.fromRGB(25,25,25) }, 0.25)
-            tween(knob, {
-                BackgroundColor3 = tbl3.toggleOn,
-                Position = UDim2.new(0, 25, 0.5, -8),
-            }, 0.25, Enum.EasingStyle.Back)
+            tween(knob, { BackgroundColor3 = tbl3.toggleOn, Position = UDim2.new(0, 25, 0.5, -8) }, 0.25, Enum.EasingStyle.Back)
             tween(haloStroke, { Transparency = 0.65 }, 0.25)
         else
             tween(toggleFrame, { BackgroundColor3 = Color3.fromRGB(15,15,15) }, 0.25)
-            tween(knob, {
-                BackgroundColor3 = Color3.fromRGB(100,100,100),
-                Position = UDim2.new(0, 3, 0.5, -8),
-            }, 0.25, Enum.EasingStyle.Back)
+            tween(knob, { BackgroundColor3 = Color3.fromRGB(100,100,100), Position = UDim2.new(0, 3, 0.5, -8) }, 0.25, Enum.EasingStyle.Back)
             tween(haloStroke, { Transparency = 1 }, 0.25)
         end
     end
-
     local function setState(v, silent)
         state = v
         tbl[key] = v
@@ -1297,14 +2570,10 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
         if callback then callback(v) end
         if not silent then playClick() end
     end
-
     ToggleRegistry[key] = setState
-
     clickBtn.MouseButton1Click:Connect(function()
         setState(not state)
     end)
-
-    -- key bind
     local listening = false
     keyBtn.MouseButton1Click:Connect(function()
         listening = true
@@ -1323,172 +2592,14 @@ local function createKeybindToggle(text, tooltipText, key, bindKey, bindCode, or
             listening = false
         end
     end)
-
     render()
     return frame, setState, keyBtn
 end
 
--- slider
-local function createSlider(text, tooltipText, min, max, default, decimals, order, callback)
-    local frame = Instance.new("Frame", page)
-    frame.Size = UDim2.new(1, -8, 0, 60)
-    frame.BackgroundColor3 = tbl3.surface
-    frame.BorderSizePixel = 0
-    frame.LayoutOrder = order or 0
-    corner(frame, 10)
-    bindTooltip(frame, tooltipText)
-    frame.MouseEnter:Connect(function() tween(frame, { BackgroundColor3 = tbl3.surfaceHover }, 0.2) end)
-    frame.MouseLeave:Connect(function() tween(frame, { BackgroundColor3 = tbl3.surface }, 0.2) end)
+-- ============================================
+-- BUILD UI
+-- ============================================
 
-    local lbl = Instance.new("TextLabel", frame)
-    lbl.Size = UDim2.new(1, -60, 0, 18)
-    lbl.Position = UDim2.new(0, 14, 0, 8)
-    lbl.Text = text
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 12
-    lbl.TextColor3 = tbl3.white
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.BackgroundTransparency = 1
-
-    local sub = Instance.new("TextLabel", frame)
-    sub.Size = UDim2.new(1, -60, 0, 14)
-    sub.Position = UDim2.new(0, 14, 0, 28)
-    sub.Text = tooltipText or ""
-    sub.Font = Enum.Font.Gotham
-    sub.TextSize = 10
-    sub.TextColor3 = tbl3.textMuted
-    sub.TextXAlignment = Enum.TextXAlignment.Left
-    sub.BackgroundTransparency = 1
-
-    local fmt = "%." .. (decimals or 1) .. "f"
-    local valLbl = Instance.new("TextLabel", frame)
-    valLbl.Size = UDim2.new(0, 48, 0, 18)
-    valLbl.Position = UDim2.new(1, -58, 0, 8)
-    valLbl.Text = string.format(fmt, default)
-    valLbl.Font = Enum.Font.GothamBold
-    valLbl.TextSize = 11
-    valLbl.TextColor3 = tbl3.accent
-    valLbl.TextXAlignment = Enum.TextXAlignment.Right
-    valLbl.BackgroundTransparency = 1
-
-    local track = Instance.new("Frame", frame)
-    track.Size = UDim2.new(0, 100, 0, 6)
-    track.Position = UDim2.new(1, -118, 0, 32)
-    track.BackgroundColor3 = Color3.fromRGB(15,15,15)
-    track.BackgroundTransparency = 0.5
-    track.BorderSizePixel = 0
-    corner(track, 999)
-    local tstroke = Instance.new("UIStroke", track)
-    tstroke.Color = Color3.fromRGB(255,255,255)
-    tstroke.Thickness = 1
-    tstroke.Transparency = 0.85
-
-    local fill = Instance.new("Frame", track)
-    local pct = (default - min) / (max - min)
-    fill.Size = UDim2.new(pct, 0, 1, 0)
-    fill.BackgroundColor3 = tbl3.accent
-    fill.BorderSizePixel = 0
-    corner(fill, 999)
-
-    local knob2 = Instance.new("Frame", fill)
-    knob2.Size = UDim2.new(0, 14, 0, 14)
-    knob2.Position = UDim2.new(1, -7, 0.5, -7)
-    knob2.BackgroundColor3 = tbl3.toggleKnob
-    knob2.BorderSizePixel = 0
-    corner(knob2, 999)
-    local kg = Instance.new("UIGradient", knob2)
-    kg.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,150)),
-    })
-    kg.Rotation = 90
-    local ks = Instance.new("UIStroke", knob2)
-    ks.Color = Color3.fromRGB(255,255,255)
-    ks.Thickness = 1
-    ks.Transparency = 0.5
-
-    local dragBtn = Instance.new("TextButton", track)
-    dragBtn.Size = UDim2.new(1, 0, 1, 20)
-    dragBtn.Position = UDim2.new(0, 0, 0.5, -10)
-    dragBtn.BackgroundTransparency = 1
-    dragBtn.Text = ""
-
-    local dragging2 = false
-
-    local function update(input)
-        local p = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        fill.Size = UDim2.new(p, 0, 1, 0)
-        local v = min + (max - min) * p
-        v = math.floor(v * (10^decimals) + 0.5) / (10^decimals)
-        valLbl.Text = string.format(fmt, v)
-        if callback then callback(v) end
-    end
-
-    dragBtn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging2 = true
-            update(input)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging2 = false
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging2 and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            update(input)
-        end
-    end)
-
-    return frame
-end
-
--- input field
-local function createInputField(text, placeholder, default, order, callback)
-    local frame = Instance.new("Frame", page)
-    frame.Size = UDim2.new(1, -8, 0, 60)
-    frame.BackgroundColor3 = tbl3.surface
-    frame.BorderSizePixel = 0
-    frame.LayoutOrder = order or 0
-    corner(frame, 10)
-
-    local lbl = Instance.new("TextLabel", frame)
-    lbl.Size = UDim2.new(1, -16, 0, 14)
-    lbl.Position = UDim2.new(0, 14, 0, 8)
-    lbl.Text = text
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 10
-    lbl.TextColor3 = tbl3.textMuted
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.BackgroundTransparency = 1
-
-    local box = Instance.new("TextBox", frame)
-    box.Size = UDim2.new(1, -28, 0, 26)
-    box.Position = UDim2.new(0, 14, 0, 26)
-    box.PlaceholderText = placeholder
-    box.PlaceholderColor3 = tbl3.textDim
-    box.Text = default or ""
-    box.Font = Enum.Font.Gotham
-    box.TextSize = 12
-    box.TextColor3 = tbl3.text
-    box.BackgroundColor3 = tbl3.input
-    box.BorderSizePixel = 0
-    box.ClearTextOnFocus = false
-    box.TextXAlignment = Enum.TextXAlignment.Left
-    corner(box, 6)
-    padding(box, 0, 0, 8, 8)
-
-    if callback then
-        box.FocusLost:Connect(function(enter)
-            if enter then callback(box.Text) end
-        end)
-    end
-
-    return box
-end
-
--- section: Target Selection
 createSection("Target Selection", 1)
 
 local targetCard = Instance.new("Frame", page)
@@ -1527,7 +2638,6 @@ targetUser.TextSize = 11
 targetUser.TextColor3 = tbl3.textMuted
 targetUser.TextXAlignment = Enum.TextXAlignment.Left
 targetUser.BackgroundTransparency = 1
-targetUser.TextTruncate = Enum.TextTruncate.AtEnd
 
 local targetInfo = Instance.new("TextLabel", targetCard)
 targetInfo.Size = UDim2.new(1, -90, 0, 14)
@@ -1538,7 +2648,6 @@ targetInfo.TextSize = 11
 targetInfo.TextColor3 = tbl3.textMuted
 targetInfo.TextXAlignment = Enum.TextXAlignment.Left
 targetInfo.BackgroundTransparency = 1
-targetInfo.TextTruncate = Enum.TextTruncate.AtEnd
 
 local clearTargetBtn = Instance.new("TextButton", targetCard)
 clearTargetBtn.Size = UDim2.new(0, 60, 0, 24)
@@ -1580,7 +2689,6 @@ clearTargetBtn.MouseButton1Click:Connect(function()
     SendNotification("Eternity", "Target cleared.", 2)
 end)
 
--- player search
 createSection("Player Search", 3)
 local searchBox = createInputField("SEARCH PLAYERS", "Search by name...", "", 4)
 
@@ -1663,7 +2771,6 @@ Players.PlayerAdded:Connect(function() task.defer(buildPlayerList) end)
 Players.PlayerRemoving:Connect(function() task.defer(buildPlayerList) end)
 buildPlayerList()
 
--- presets
 createSection("Presets", 6)
 local presetRow = Instance.new("Frame", page)
 presetRow.Size = UDim2.new(1, -8, 0, 32)
@@ -1709,14 +2816,12 @@ allBtn.MouseButton1Click:Connect(function()
     searchBox.Text = "all"
     SendNotification("Eternity", "Preset: All Players", 2)
 end)
-
 nonFriendBtn.MouseButton1Click:Connect(function()
     playClick()
     setTarget(nil)
     searchBox.Text = "nonfriends"
     SendNotification("Eternity", "Preset: Non-Friends", 2)
 end)
-
 clearPresetBtn.MouseButton1Click:Connect(function()
     playClick()
     searchBox.Text = ""
@@ -1724,9 +2829,7 @@ clearPresetBtn.MouseButton1Click:Connect(function()
     SendNotification("Eternity", "Cleared.", 2)
 end)
 
--- Attach Settings
 createSection("Attach Settings", 8)
-
 createToggle("No Delay", "Enable zero-delay physics weld replication", "NoDelay", 9, function(arg)
     if arg then
         SendNotification("Eternity", "No Delay enabled.", 2)
@@ -1736,10 +2839,8 @@ createToggle("No Delay", "Enable zero-delay physics weld replication", "NoDelay"
     end
 end)
 
--- Individual attach toggles
 createSection("Attachments", 10)
 
--- Facebang controls
 local fbSlider1, fbSlider2
 createKeybindToggle("Facebang", "Toggle ON to arm & show settings", "FacebangEnabled", "Facebang", tbl2.Facebang, 11, function(enabled)
     if fbSlider1 then fbSlider1.Visible = enabled end
@@ -1753,7 +2854,6 @@ fbSlider2 = createSlider("Facebang Distance", "1-10", 1, 10, FacebangDistance, 1
     FacebangDistance = v
 end)
 
--- Hipbang controls
 local hbSlider1, hbSlider2
 createKeybindToggle("Hipbang", "Toggle ON to arm & show settings", "HipbangEnabled", "Hipbang", tbl2.Hipbang, 14, function(enabled)
     if hbSlider1 then hbSlider1.Visible = enabled end
@@ -1784,6 +2884,7 @@ end
 gridLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(onGridSizeChange)
 task.defer(onGridSizeChange)
 
+local gridRenders = {}
 local function gridToggle(text, tooltipText, key, order)
     local frame = Instance.new("Frame", gridFrame)
     frame.BackgroundColor3 = tbl3.surface
@@ -1793,7 +2894,6 @@ local function gridToggle(text, tooltipText, key, order)
     bindTooltip(frame, tooltipText)
     frame.MouseEnter:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surfaceHover }, 0.15)
-        playHover()
     end)
     frame.MouseLeave:Connect(function()
         tween(frame, { BackgroundColor3 = tbl3.surface }, 0.15)
@@ -1829,7 +2929,6 @@ local function gridToggle(text, tooltipText, key, order)
     return render
 end
 
-local gridRenders = {}
 gridRenders.Pat = gridToggle("Pat", "Stand in front and pat target", "Pat", 1)
 gridRenders.Headsit = gridToggle("Headsit", "Sit on target's head", "Headsit", 2)
 gridRenders.Backhug = gridToggle("Backhug", "Hug from behind", "Backhug", 3)
@@ -1839,10 +2938,8 @@ gridRenders.Bagpack = gridToggle("Bagpack", "Attach like backpack", "Bagpack", 6
 gridRenders.Goon = gridToggle("Goon", "Face to face emote", "Goon", 7)
 gridRenders.CustomAttach = gridToggle("Custom Attach", "Custom emote + offset", "CustomAttach", 8)
 
--- Custom attach config
 createSection("Custom Attach", 18)
-
-local emoteBox = createInputField("EMOTE ASSET ID", "Paste emote ID...", CustomAttachEmoteId, 19, function(text)
+createInputField("EMOTE ASSET ID", "Paste emote ID...", CustomAttachEmoteId, 19, function(text)
     CustomAttachEmoteId = tostring(text)
 end)
 
@@ -1894,7 +2991,6 @@ local function renderFacing()
         behindBtn.TextColor3 = tbl3.textMuted
     end
 end
-
 frontBtn.MouseButton1Click:Connect(function()
     playClick()
     CustomAttachFacing = "Front"
@@ -1917,22 +3013,14 @@ createSlider("Side - X Offset", "Horizontal offset", -10, 10, CustomAttachOffset
     CustomAttachOffsetX = v
 end)
 
--- Keybind handling
+-- keybind handler
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == tbl2.Facebang and tbl.FacebangEnabled then
-        if not tbl.Facebang then
-            SetAttachState("Facebang", true)
-        else
-            SetAttachState("Facebang", false)
-        end
-        if GridButtonVisuals.Facebang then GridButtonVisuals.Facebang(tbl.Facebang) end
+        SetAttachState("Facebang", not tbl.Facebang)
+        if gridRenders.Facebang then gridRenders.Facebang(tbl.Facebang) end
     elseif input.KeyCode == tbl2.Hipbang and tbl.HipbangEnabled then
-        if not tbl.Hipbang then
-            SetAttachState("Hipbang", true)
-        else
-            SetAttachState("Hipbang", false)
-        end
+        SetAttachState("Hipbang", not tbl.Hipbang)
     elseif input.KeyCode == tbl2.Pat and tbl.PatEnabled then
         SetAttachState("Pat", not tbl.Pat)
         if gridRenders.Pat then gridRenders.Pat(tbl.Pat) end
@@ -2004,5 +3092,5 @@ task.spawn(function()
     tween(mainFrame, { Position = basePos }, 0.75, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 end)
 
-SendNotification("Eternity", "Attach-only UI loaded. Right Ctrl to toggle.", 4)
-print("[Eternity] Attach-only UI loaded. Right Ctrl toggles.")
+SendNotification("Eternity", "Attach-only UI loaded. Right Ctrl toggles.", 4)
+print("[Eternity] Attach-only UI loaded.")
